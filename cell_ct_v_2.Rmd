@@ -1,0 +1,143 @@
+---
+title: "Finding the number of cells in a volume of the crust"
+output: pdf_document
+author: Drew
+date: "31 Aug 2020"
+---
+
+```{r setup, echo=FALSE, message=FALSE}
+library(tidyverse)
+library(readxl)
+theme_set(theme_bw())
+```
+
+We want to calculate the number of cells above the 100 C isotherm from the volcano to the trench in a volume of Costa Rica. Karen extracted this data from Harris (2010). 
+
+```{r isotherm, message=FALSE}
+d <- readxl::read_xlsx("data/Harris 2010 isotherm paper.xlsx", sheet = "Sheet1") %>%
+  select(x.km = `Km from trench...1`, z.crust = `Km depth of 100C isotherm`) %>%
+  mutate(x.m = x.km * 1000,
+         z.crust.m = z.crust * 1000) %>%
+  filter(!is.na(x.km))
+
+x.m.max <- max(d$x.m) # Far end of the domain
+
+# Calculate a spline empirically and predict values at each meter
+spline <- loess(z.crust.m ~ x.m, data = d, span = 0.2)
+grid <- data.frame(x.m = seq(from = 0, to = x.m.max, by = 1))
+preds <- predict(spline, newdata = grid)
+
+d_pred <- data.frame(x.m = grid$x.m, z.pred.m = preds)
+
+#d_pred <- grid %>%
+#  mutate(z.pred.m = preds)
+
+#d_test <- d_pred[-(1:2000), ]
+
+# Ahh, of course. predict.loess responsibly won't predict outside of zero. Just for the hell of it I'll cut off a little earlier and extrapolate a line to zero
+# Note the first point on there is 1314 m
+m <- d_pred$z.pred.m[1315] / 1315
+d_pred$z.pred.m[1:1314] <- d_pred$x.m[1:1314]*m
+
+
+p_100_isotherm <- ggplot(d_pred, aes(x=x.m, y=z.pred.m)) + 
+  geom_line() +
+  #geom_point(data = d, aes(x=x.m, y=z.crust.m)) + 
+  #geom_smooth(span = 0.2) + 
+  scale_y_reverse(name = "depth, m") +
+  scale_x_continuous(name = "x, m") +
+  ggtitle("depth of the 100 C isotherm, m")
+print(p_100_isotherm)
+```
+
+Magnabosco gives the cell abundance as 
+
+$$
+\rho = 10^Az^B
+$$
+where $A$ and $B$ are empirically determined from log-transformed observations of cell density as a function of depth. 
+
+
+The antiderivative of $\rho(z)$ is given by
+$$
+\int 10^Az^Bdz = \frac{10^Az^{B+1}}{B+1} + C
+$$
+
+Note that $0^{B+1} = 0$ for any $B$, so
+
+$$
+\begin{aligned}
+c_{col}(z_{iso}) &= \int_0^{z_{iso}} 10^Az^B dz \\
+&= \frac{10^Az_{iso}^{B+1}}{B+1}
+\end{aligned}
+$$
+
+So we can write a function that will calculate $c_{col}$ as a function of $z_{iso}$ as shown below. This will analytically integrate a column of cells at each meter of volcano-to-trench distance. I've titled the A parameter from Magnabosco et al as `A.m` to remind us that it is in units of cells per m<sup>3</sup>, not cm<sup>3</sup>. Since the conversion factor from cells cm<sup>-3</sup> to cells m<sup>-3</sup> is $100\times100\times100=10^6$, we can simply add 6 to Magnabosco's A. B stays the same. 
+
+```{r}
+calc_c_col <- function(z.iso, A.m, B) {
+  c.col <- 10^A.m*z.iso^(B+1) / (B+1)
+  c.col
+}
+```
+
+Then, I can numerically integrate (slightly ham-fistedly, but it'll be close enough) across the trench-to-arc distance by adding up one-meter-wide columns:
+
+$$
+c_{vol} = y \times \Sigma_{x=0}^{x=x_{max}}\frac{10^Az_{iso(x)}^{B+1}}{B+1}
+$$
+Multiplying by $y$ to account for the number of cells in a cross-sectional slice gives the number of cells in a volume.
+
+I'll use the empirical spline defined above for $z_{iso(x)}$. We can quibble about what the correct shape should be; I made it go linearly from the end of the spline to $(0,0)$, i.e. to have the depth be zero at the volcano. We'll define the relevant paremeters first, and then do the calculation.
+
+```{r}
+# Parameters
+A.m <- 8.16 + 6
+B <- -0.94
+y.m <- 100 * 1000 # 100 km N-S
+# Calculate c_col for each depth
+d_pred <- d_pred %>%
+  mutate(c.col = calc_c_col(z.iso = z.pred.m, A.m = A.m, B = B),
+         c.cross.section = c.col * y.m) 
+```
+
+Finally just add up all the slices:
+
+```{r}
+n.cells <- sum(d_pred$c.cross.section)
+```
+
+The predicted number of cells in the volume is `r formatC(n.cells, format = "e", digits = 2)`. Note that Magnabosco et al estimate about $2-6 \times10^{29}$ cells on Earth. 
+
+## Gut checks
+
+I know that a big fraction of the total cells are in the top 100 meters. Let's see what the number would be if we only calculate in the top 100 m, for the entire data set. 
+
+$$
+\begin{aligned}
+c_{vol} &= y \times \Sigma_{x=0}^{x=x_{max}}\frac{10^Az_{iso(x)}^{B+1}}{B+1}
+&=100 \textrm{km} \times 1000 \textrm{m km}^{-1} \times \frac{ 10^{14.16} \times100^{0.06}}{0.06}
+\end{aligned}
+$$
+```{r}
+c.est <- 100*1000*(10^14.16*100^0.06)/0.06
+```
+This estimates `r formatC(c.est, format="e", digits =2)`, which is low by a factor of about `r formatC(c.est/n.cells, format = "e", digits = 2)`.
+
+Just as one more check, here's a plot of how the fraction of cells in a 14-km column you get from integrating only to a certain depth limit:
+
+```{r}
+z <- 0:14000
+c.col <- calc_c_col(z, A.m = A.m, B = B)
+c.frac <- c.col / max(c.col, na.rm = TRUE)
+
+dfc <- data.frame(z = z, c.frac = c.frac)
+ggplot(dfc, aes(x = z, y = c.frac)) +
+  geom_line() +
+  scale_y_continuous(labels = scales::label_percent()) +
+  xlab("max depth of integration, m") + 
+  ylab("frac of cells measured")
+```
+
+At a depth of 100m, we should get `r formatC(dfc$c.frac[dfc$z == 100]*100, format="g", digits = 0)`% of the total cells. So I think my measurement is too high for some reason.
+
