@@ -11,10 +11,21 @@ library(readxl)
 theme_set(theme_bw())
 ```
 
-We want to calculate the number of cells above the 100 C isotherm from the volcano to the trench in a volume of Costa Rica. Karen extracted this data from Harris (2010). 
+We want to calculate the number of cells above the 122 C isotherm from the volcano to the trench in a volume of Costa Rican crust, which is 273 km in the along-trench dimension. 
+
+## Depth of the 122 C isotherm
+Karen extracted the isotherm data from Harris (2010). The isotherms are quite linear, so we'll create a spline for each one, and then linearly interpolate between the two. 
+
+
 
 ```{r isotherm, message=FALSE}
 d <- readxl::read_xlsx("data/Harris 2010 isotherm paper.xlsx", sheet = "Sheet1") %>%
+  filter(is.na(x.km)) %>%
+  mutate(x.m = x.km *1000,
+         z.m = z.km * 1000)
+  
+  
+  
   select(x.km = `Km from trench...1`, z.crust = `Km depth of 100C isotherm`) %>%
   mutate(x.m = x.km * 1000,
          z.crust.m = z.crust * 1000) %>%
@@ -94,7 +105,7 @@ I'll use the empirical spline defined above for $z_{iso(x)}$. We can quibble abo
 # Parameters
 A.m <- 8.16 + 6
 B <- -0.94
-y.m <- 100 * 1000 # 100 km N-S
+y.m <- 273.427 * 1000 # along-trench width of the integration box
 # Calculate c_col for each depth
 d_pred <- d_pred %>%
   mutate(c.col = calc_c_col(z.iso = z.pred.m, A.m = A.m, B = B),
