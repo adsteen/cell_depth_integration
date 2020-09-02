@@ -16,50 +16,52 @@ We want to calculate the number of cells above the 122 C isotherm from the volca
 ## Depth of the 122 C isotherm
 Karen extracted the isotherm data from Harris (2010). The isotherms are quite linear, so we'll create a spline for each one, and then linearly interpolate between the two. 
 
-
-
-```{r isotherm, message=FALSE}
+```{r isotherm, message=FALSE, warning=FALSE, fig.cap = "Predicted 122 C isotherm (black line) and observed 100 and 200 C isotherms."}
 d <- readxl::read_xlsx("data/Harris 2010 isotherm paper.xlsx", sheet = "Sheet1") %>%
-  filter(is.na(x.km)) %>%
-  mutate(x.m = x.km *1000,
+  filter(!is.na(x.km)) %>%
+  mutate(temp = as.factor(temp),
+         x.m = x.km * 1000,
          z.m = z.km * 1000)
-  
-  
-  
-  select(x.km = `Km from trench...1`, z.crust = `Km depth of 100C isotherm`) %>%
-  mutate(x.m = x.km * 1000,
-         z.crust.m = z.crust * 1000) %>%
-  filter(!is.na(x.km))
 
-x.m.max <- max(d$x.m) # Far end of the domain
+# Now empirically fit a spline to each isotherm, and then calculate the 122 C isotherm as 22% of the way from teh 100 to the 200 isotherm
+# make_loess <- function(x) loess(z.m ~ x.m, data = x)
+# splines <- d %>%
+#   group_by(temp) %>%
+#   nest() %>%
+#   map(data, make_loess) # wtf map(), why u no work?
+x.m.max <- max(d$x.m)
+my.span <- 0.175
+spline_100 <- loess(z.m ~ x.m, data = d %>% filter(temp == "100"), span = my.span)
+spline_200 <- loess(z.m ~ x.m, data = d %>% filter(temp == "200"), span = my.span) 
 
-# Calculate a spline empirically and predict values at each meter
-spline <- loess(z.crust.m ~ x.m, data = d, span = 0.2)
+# Predict the spline values at every 1-m interval (which is overkill, but saves me multiplying by a constant)
 grid <- data.frame(x.m = seq(from = 0, to = x.m.max, by = 1))
-preds <- predict(spline, newdata = grid)
+preds.100 <- predict(spline_100, newdata = grid)
+preds.200 <- predict(spline_200, newdata = grid)
+preds.122 <- preds.100 + 0.22*(preds.200 - preds.100)
 
-d_pred <- data.frame(x.m = grid$x.m, z.pred.m = preds)
+d_pred <- data.frame(x.m = grid$x.m, z.pred.122 = preds.122)
 
-#d_pred <- grid %>%
-#  mutate(z.pred.m = preds)
+# Note that this is kinda janky. THe proper thing to do would be to interpolate the contour lines
+# for which there are several R packages (contoureR, gr.devices::contourLines) that might work
+set.seed(2112)
+spline.122 <- loess(z.pred.122 ~ x.m, data = d_pred %>% slice_sample(n = 200), span = 0.3)
+z.pred.122.smooth <- predict(spline.122, newdata = grid)
+d_pred <- d_pred %>% 
+  mutate(z.pred.122.smooth = z.pred.122.smooth)
 
-#d_test <- d_pred[-(1:2000), ]
-
-# Ahh, of course. predict.loess responsibly won't predict outside of zero. Just for the hell of it I'll cut off a little earlier and extrapolate a line to zero
-# Note the first point on there is 1314 m
-m <- d_pred$z.pred.m[1315] / 1315
-d_pred$z.pred.m[1:1314] <- d_pred$x.m[1:1314]*m
-
-
-p_100_isotherm <- ggplot(d_pred, aes(x=x.m, y=z.pred.m)) + 
-  geom_line() +
-  #geom_point(data = d, aes(x=x.m, y=z.crust.m)) + 
-  #geom_smooth(span = 0.2) + 
-  scale_y_reverse(name = "depth, m") +
-  scale_x_continuous(name = "x, m") +
-  ggtitle("depth of the 100 C isotherm, m")
-print(p_100_isotherm)
+p_isotherms <- ggplot() +
+  geom_point(data = d, aes(x=x.m, y=z.m, shape = temp)) + 
+  geom_smooth(data = d, aes(x=x.m, y=z.m, linetype = temp), method = "loess", se=FALSE, span = 0.175, colour = "gray50") +
+  #geom_line(data = d_pred, aes(x=x.m, y=z.pred.122), linetype = 2) +
+  geom_line(data = d_pred, aes(x=x.m, y=z.pred.122.smooth), linetype = 2) +
+  #geom_vline(xintercept = 80000, linetype =3) + 
+  geom_rect(data = data.frame(xmin = -Inf, xmax = 80000, ymin = -Inf, ymax = Inf), aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax), fill = "black", alpha = 0.3) + 
+  scale_x_continuous(name  = "distance from trench (x), m") +
+  scale_y_reverse(name = "depth, m") 
+print(p_isotherms)
 ```
+We'll only integrate from 80 km to ~200 km, since that is the location of the coastline based on the location of earthquakes in Harris et al. 
 
 Magnabosco gives the cell abundance as 
 
@@ -108,14 +110,14 @@ B <- -0.94
 y.m <- 273.427 * 1000 # along-trench width of the integration box
 # Calculate c_col for each depth
 d_pred <- d_pred %>%
-  mutate(c.col = calc_c_col(z.iso = z.pred.m, A.m = A.m, B = B),
+  mutate(c.col = calc_c_col(z.iso = z.pred.122.smooth, A.m = A.m, B = B),
          c.cross.section = c.col * y.m) 
 ```
 
-Finally just add up all the slices:
+Finally just add up all the slices from 80 km onwards:
 
 ```{r}
-n.cells <- sum(d_pred$c.cross.section)
+n.cells <- sum(d_pred$c.cross.section[d_pred$x.m >= 80*1000], na.rm = TRUE) # the last half kilometer is NA - it doesn't matter numerically, but I don't know why off the top of my head
 ```
 
 The predicted number of cells in the volume is `r formatC(n.cells, format = "e", digits = 2)`. Note that Magnabosco et al estimate about $2-6 \times10^{29}$ cells on Earth. 
@@ -131,7 +133,7 @@ c_{vol} &= y \times \Sigma_{x=0}^{x=x_{max}}\frac{10^Az_{iso(x)}^{B+1}}{B+1}
 \end{aligned}
 $$
 ```{r}
-c.est <- 100*1000*(10^14.16*100^0.06)/0.06
+c.est <- y.m*(10^14.16*(200-80)*1000)^0.06/0.06
 ```
 This estimates `r formatC(c.est, format="e", digits =2)`, which is low by a factor of about `r formatC(c.est/n.cells, format = "e", digits = 2)`.
 
@@ -150,5 +152,5 @@ ggplot(dfc, aes(x = z, y = c.frac)) +
   ylab("frac of cells measured")
 ```
 
-At a depth of 100m, we should get `r formatC(dfc$c.frac[dfc$z == 100]*100, format="g", digits = 0)`% of the total cells. So I think my measurement is too high for some reason.
+At a depth of 100m, we should get `r formatC(dfc$c.frac[dfc$z == 100]*100, format="g", digits = 0)`% of the total cells, which is most of them.
 
