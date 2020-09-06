@@ -122,20 +122,73 @@ n.cells <- sum(d_pred$c.cross.section[d_pred$x.m >= 80*1000], na.rm = TRUE) # th
 
 The predicted number of cells in the volume is `r formatC(n.cells, format = "e", digits = 2)`. Note that Magnabosco et al estimate about $2-6 \times10^{29}$ cells on Earth. 
 
-## Gut checks
+### Error
 
-I know that a big fraction of the total cells are in the top 100 meters. Let's see what the number would be if we only calculate in the top 100 m, for the entire data set. 
+Magnabosco et al report the equation for the parameters $A$ and $B$ as $A = 8.16(8.00 \textrm{ to } 8.45)$,  $B = -0.94(-1.01 \textrm{ to } -0.81)$. The parentheses indicate 95% prediction intervals - meaning, 95% of the measured values will lie within those lines. 
+
+Canonically, for this kind of application, it would have been better to have confidence intervals (which express the uncertainty of the true value of the line). We could have a long conversation about what the correct measure of uncertainty is (is the primary source of uncertainty in the relationship regional variation? Or random measurement error? Or something else?)
+
+I'm not going to overthink it, since all we've got is prediction intervals. These will be wider than the confidence interval, so in some sense this is an overestimate of the error. But that's cool. I'm going to have to downsample the error from 95% intervals, though, because $B<-1$ causes an integration problem. So, assuming the error is normally distributed, I'll just say that they've reported $2\sigma$ error (almost exactly 95%; I'm not going to sweat the difference), so I'll divide the error in half to report $1\sigma$ values. 
+
+Also the error is asymmetric. WTF? Did they do some kind of resampling scheme to calculate the confidence intervals? Whatever, I'll just cut each error in half to get $1\sigma$. 
+
+For $A$: the low error is $8.00 + (8.16-8.00)/2 = 8.08$. The high error is $8.16 + (8.45 -8.16)/2 = 8.31$.
+
+For $B$: the low error is $(-1.01)+(-0.94+1.01)/2 = -0.975$. The high error is $-0.94 + (-0.81 + 0.94)/2 =-0.875$. 
+
+Let's re-perform the calculation with each of the sets of numbers. For convenience we'll wrap the calculation of the total number of cells in a function. 
+
+```{r}
+calc_cells <- function(d_pred = d_pred, A.m, B = B, y.m = y.m) { # d_pred and y.m defined above
+  d_pred <- d_pred %>%
+  mutate(c.col = calc_c_col(z.iso = z.pred.122.smooth, A.m = A.m, B = B),
+         c.cross.section = c.col * y.m) 
+  n.cells <- sum(d_pred$c.cross.section[d_pred$x.m >= 80*1000], na.rm = TRUE)
+  n.cells
+}
+```
+
+So the low "$1\sigma$ prediction interval" - remember, there are a bunch of caveats on this error as described above = would be given by `A.m = 14.08` and `B = -0.975` and the high error would be given by `A.m = 14.31` and `B = -0.875`.
+
+```{r}
+lo.cells <- calc_cells(d_pred = d_pred, A.m = 14.08, B = -0.875, y.m = y.m)
+hi.cells <- calc_cells(d_pred = d_pred, A.m = 14.31, B = -0.975, y.m = y.m)
+```
+
+
+# Final cell counts
+
+**We calculate that the number of cells is `r formatC(n.cells, format = "e", digits = 2)`, with +/- 1 standard deviation estimates of `r formatC(lo.cells, format = "e", digits = 2)` to `r formatC(hi.cells, format = "e", digits = 2)` cells.**
+
+# Volume
+
+We also need to know the volume of rock that represents. This is easier: we can just multiply the width of the box (273.4 km, expressed in meters) by the max depth (meters again) and add each of these slices (since they are one meter wide) to get the total volume. 
+
+$$
+V = y \times \Sigma_{x=0}^{x_{max}}z_{iso}
+$$
+```{r}
+vol <- y.m * sum(d_pred$z.pred.122.smooth[d_pred$x.m >= 80*1000], na.rm = TRUE)
+```
+The volume calculated is `r formatC(vol, format = "e", digits = 2)` m<sup>3</sup>.
+
+# Sanity checks
+
+First off, the area of the box we're talking about is $272 \times 120 = 3.2\times 10^4$ km2. The land area of the planet is $3.6\times 10^8$ km^2. So the area of Earth's landmass is pretty close to $10^4$ times bigger than the area of our box. Magnabosco et al estimate the total number of cells in Earth's continental subsurface as $2-6 \textrm{(call it 3)} \times 10^{29}$ cells, whereas we calculate that our box contains `r formatC(n.cells, format = "e", digits = 2)`. So the Magnabosco number exceeds our number by a factor of around $2\times 10^3$. Our box has a somewhat disproportionately high number of cells by that measure. Given that $B$ for arcs (8.16) is higher than B for continental shelf/slope, shield, and extended crust (7.46-7.86) and is similar to that of orogens (8.15), that seems reasonable. 
+
+The shallowest the isotherm gets is about 3000 m. Let's see what the number would be if we only calculate cell abundance in a rectangular prism 3000 m deep, 273 km wide and 120 km long. 
 
 $$
 \begin{aligned}
-c_{vol} &= y \times \Sigma_{x=0}^{x=x_{max}}\frac{10^Az_{iso(x)}^{B+1}}{B+1}
-&=100 \textrm{km} \times 1000 \textrm{m km}^{-1} \times \frac{ 10^{14.16} \times100^{0.06}}{0.06}
+c_{vol} &= x \times y \times \frac{10^Az_{iso(x)}^{B+1}}{B+1} \\
+&= 27,300 \times 160,000 \times \frac{ 10^{14.16} \times100^{0.06}}{0.06} \\
+&= 2.73 \times 1.6 \times 10^{9} \times \frac{10^{15.22}}{0.06}
 \end{aligned}
 $$
 ```{r}
-c.est <- y.m*(10^14.16*(200-80)*1000)^0.06/0.06
+c.est <- 273000 * (max(d_pred$x.m, na.rm = TRUE) - 80000) * 10^14.16 * 100^0.06 / 0.06
 ```
-This estimates `r formatC(c.est, format="e", digits =2)`, which is low by a factor of about `r formatC(c.est/n.cells, format = "e", digits = 2)`.
+This estimates `r formatC(c.est, format="e", digits =2)` total cells, which is about `r formatC(c.est/n.cells * 100, format = "f", digits = 1)`% of the amount I calculated. Pretty good!.
 
 Just as one more check, here's a plot of how the fraction of cells in a 14-km column you get from integrating only to a certain depth limit:
 
@@ -152,5 +205,9 @@ ggplot(dfc, aes(x = z, y = c.frac)) +
   ylab("frac of cells measured")
 ```
 
-At a depth of 100m, we should get `r formatC(dfc$c.frac[dfc$z == 100]*100, format="g", digits = 0)`% of the total cells, which is most of them.
+At a depth of 3000 m, we should get `r formatC(dfc$c.frac[dfc$z == 3000]*100, format="f", digits = 0)`% of the total cells. So the fact that this simple box model calculates `r formatC(c.est/n.cells * 100, format = "f", digits = 1)`% of the cells that the more spatially accurate model calculates is a good sign. 
+
+## Using R's integrate function
+
+After performing this analysis, I learned of the existence of R's `integrate()` function. Pretty useful! Let's check to see that 
 
