@@ -1,179 +1,277 @@
-    library(mosaic) # unsure whether this is necessary
+Finding the number of cells in a volume of the crust
+================
+Drew
+31 Aug 2020
 
-    ## Warning: package 'mosaic' was built under R version 4.0.2
+We want to calculate the number of cells above the 122 C isotherm from
+the volcano to the trench in a volume of Costa Rican crust, which is 273
+km in the along-trench dimension.
 
-    ## Loading required package: dplyr
+## Depth of the 122 C isotherm
 
-    ## 
-    ## Attaching package: 'dplyr'
+Karen extracted the isotherm data from Harris (2010). The isotherms are
+quite linear, so we’ll create a spline for each one, and then linearly
+interpolate between the two.
 
-    ## The following objects are masked from 'package:stats':
-    ## 
-    ##     filter, lag
+``` r
+d <- readxl::read_xlsx("data/Harris 2010 isotherm paper.xlsx", sheet = "Sheet1") %>%
+  filter(!is.na(x.km)) %>%
+  mutate(temp = as.factor(temp),
+         x.m = x.km * 1000,
+         z.m = z.km * 1000)
 
-    ## The following objects are masked from 'package:base':
-    ## 
-    ##     intersect, setdiff, setequal, union
+# Now empirically fit a spline to each isotherm, and then calculate the 122 C isotherm as 22% of the way from teh 100 to the 200 isotherm
+# make_loess <- function(x) loess(z.m ~ x.m, data = x)
+# splines <- d %>%
+#   group_by(temp) %>%
+#   nest() %>%
+#   map(data, make_loess) # wtf map(), why u no work?
+x.m.max <- max(d$x.m)
+my.span <- 0.175
+spline_100 <- loess(z.m ~ x.m, data = d %>% filter(temp == "100"), span = my.span)
+spline_200 <- loess(z.m ~ x.m, data = d %>% filter(temp == "200"), span = my.span) 
 
-    ## Loading required package: lattice
+# Predict the spline values at every 1-m interval (which is overkill, but saves me multiplying by a constant)
+grid <- data.frame(x.m = seq(from = 0, to = x.m.max, by = 1))
+preds.100 <- predict(spline_100, newdata = grid)
+preds.200 <- predict(spline_200, newdata = grid)
+preds.122 <- preds.100 + 0.22*(preds.200 - preds.100)
 
-    ## Loading required package: ggformula
+d_pred <- data.frame(x.m = grid$x.m, z.pred.122 = preds.122)
 
-    ## Warning: package 'ggformula' was built under R version 4.0.2
+# Note that this is kinda janky. THe proper thing to do would be to interpolate the contour lines
+# for which there are several R packages (contoureR, gr.devices::contourLines) that might work
+set.seed(2112)
+spline.122 <- loess(z.pred.122 ~ x.m, data = d_pred %>% slice_sample(n = 200), span = 0.3)
+z.pred.122.smooth <- predict(spline.122, newdata = grid)
+d_pred <- d_pred %>% 
+  mutate(z.pred.122.smooth = z.pred.122.smooth)
 
-    ## Loading required package: ggplot2
+p_isotherms <- ggplot() +
+  geom_point(data = d, aes(x=x.m, y=z.m, shape = temp)) + 
+  geom_smooth(data = d, aes(x=x.m, y=z.m, linetype = temp), method = "loess", se=FALSE, span = 0.175, colour = "gray50") +
+  #geom_line(data = d_pred, aes(x=x.m, y=z.pred.122), linetype = 2) +
+  geom_line(data = d_pred, aes(x=x.m, y=z.pred.122.smooth), linetype = 2) +
+  #geom_vline(xintercept = 80000, linetype =3) + 
+  geom_rect(data = data.frame(xmin = -Inf, xmax = 80000, ymin = -Inf, ymax = Inf), aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax), fill = "black", alpha = 0.3) + 
+  scale_x_continuous(name  = "distance from trench (x), m") +
+  scale_y_reverse(name = "depth, m") 
+print(p_isotherms)
+```
 
-    ## Loading required package: ggstance
+![Predicted 122 C isotherm (black line) and observed 100 and 200 C
+isotherms.](cell_ct_files/figure-gfm/isotherm-1.png) We’ll only
+integrate from 80 km to \~200 km, since that is the location of the
+coastline based on the location of earthquakes in Harris et al. 
 
-    ## Warning: package 'ggstance' was built under R version 4.0.2
+Magnabosco gives the cell abundance as
 
-    ## 
-    ## Attaching package: 'ggstance'
+\[
+\rho = 10^Az^B
+\] where \(A\) and \(B\) are empirically determined from log-transformed
+observations of cell density as a function of depth.
 
-    ## The following objects are masked from 'package:ggplot2':
-    ## 
-    ##     geom_errorbarh, GeomErrorbarh
+The antiderivative of \(\rho(z)\) is given by \[
+\int 10^Az^Bdz = \frac{10^Az^{B+1}}{B+1} + C
+\]
 
-    ## 
-    ## New to ggformula?  Try the tutorials: 
-    ##  learnr::run_tutorial("introduction", package = "ggformula")
-    ##  learnr::run_tutorial("refining", package = "ggformula")
+Note that \(0^{B+1} = 0\) for any \(B\), so
 
-    ## Loading required package: mosaicData
+\[
+\begin{aligned}
+c_{col}(z_{iso}) &= \int_0^{z_{iso}} 10^Az^B dz \\
+&= \frac{10^Az_{iso}^{B+1}}{B+1}
+\end{aligned}
+\]
 
-    ## Loading required package: Matrix
+So we can write a function that will calculate \(c_{col}\) as a function
+of \(z_{iso}\) as shown below. This will analytically integrate a column
+of cells at each meter of volcano-to-trench distance. I’ve titled the A
+parameter from Magnabosco et al as `A.m` to remind us that it is in
+units of cells per m<sup>3</sup>, not cm<sup>3</sup>. Since the
+conversion factor from cells cm<sup>-3</sup> to cells m<sup>-3</sup> is
+\(100\times100\times100=10^6\), we can simply add 6 to Magnabosco’s A. B
+stays the same.
 
-    ## Registered S3 method overwritten by 'mosaic':
-    ##   method                           from   
-    ##   fortify.SpatialPolygonsDataFrame ggplot2
+``` r
+calc_c_col <- function(z.iso, A.m, B) {
+  c.col <- 10^A.m*z.iso^(B+1) / (B+1)
+  c.col
+}
+```
 
-    ## 
-    ## The 'mosaic' package masks several functions from core packages in order to add 
-    ## additional features.  The original behavior of these functions should not be affected by this.
-    ## 
-    ## Note: If you use the Matrix package, be sure to load it BEFORE loading mosaic.
-    ## 
-    ## Have you tried the ggformula package for your plots?
+Then, I can numerically integrate (slightly ham-fistedly, but it’ll be
+close enough) across the trench-to-arc distance by adding up
+one-meter-wide columns:
 
-    ## 
-    ## Attaching package: 'mosaic'
+\[
+c_{vol} = y \times \Sigma_{x=0}^{x=x_{max}}\frac{10^Az_{iso(x)}^{B+1}}{B+1}
+\] Multiplying by \(y\) to account for the number of cells in a
+cross-sectional slice gives the number of cells in a volume.
 
-    ## The following object is masked from 'package:Matrix':
-    ## 
-    ##     mean
+I’ll use the empirical spline defined above for \(z_{iso(x)}\). We can
+quibble about what the correct shape should be; I made it go linearly
+from the end of the spline to \((0,0)\), i.e. to have the depth be zero
+at the volcano. We’ll define the relevant paremeters first, and then do
+the calculation.
 
-    ## The following object is masked from 'package:ggplot2':
-    ## 
-    ##     stat
+``` r
+# Parameters
+A.m <- 8.16 + 6
+B <- -0.94
+y.m <- 273.427 * 1000 # along-trench width of the integration box
+# Calculate c_col for each depth
+d_pred <- d_pred %>%
+  mutate(c.col = calc_c_col(z.iso = z.pred.122.smooth, A.m = A.m, B = B),
+         c.cross.section = c.col * y.m) 
+```
 
-    ## The following objects are masked from 'package:dplyr':
-    ## 
-    ##     count, do, tally
+Finally just add up all the slices from 80 km onwards:
 
-    ## The following objects are masked from 'package:stats':
-    ## 
-    ##     binom.test, cor, cor.test, cov, fivenum, IQR, median, prop.test,
-    ##     quantile, sd, t.test, var
+``` r
+n.cells <- sum(d_pred$c.cross.section[d_pred$x.m >= 80*1000], na.rm = TRUE) # the last half kilometer is NA - it doesn't matter numerically, but I don't know why off the top of my head
+```
 
-    ## The following objects are masked from 'package:base':
-    ## 
-    ##     max, mean, min, prod, range, sample, sum
+The predicted number of cells in the volume is 1.34e+26. Note that
+Magnabosco et al estimate about \(2-6 \times10^{29}\) cells on Earth.
 
-    library(mosaicCalc)
+### Error
 
-    ## Warning: package 'mosaicCalc' was built under R version 4.0.2
+Magnabosco et al report the equation for the parameters \(A\) and \(B\)
+as \(A = 8.16(8.00 \textrm{ to } 8.45)\),
+\(B = -0.94(-1.01 \textrm{ to } -0.81)\). The parentheses indicate 95%
+prediction intervals - meaning, 95% of the measured values will lie
+within those lines.
 
-    ## Loading required package: mosaicCore
+Canonically, for this kind of application, it would have been better to
+have confidence intervals (which express the uncertainty of the true
+value of the line). We could have a long conversation about what the
+correct measure of uncertainty is (is the primary source of uncertainty
+in the relationship regional variation? Or random measurement error? Or
+something else?)
 
-    ## Warning: package 'mosaicCore' was built under R version 4.0.2
+I’m not going to overthink it, since all we’ve got is prediction
+intervals. These will be wider than the confidence interval, so in some
+sense this is an overestimate of the error. But that’s cool. I’m going
+to have to downsample the error from 95% intervals, though, because
+\(B<-1\) causes an integration problem. So, assuming the error is
+normally distributed, I’ll just say that they’ve reported \(2\sigma\)
+error (almost exactly 95%; I’m not going to sweat the difference), so
+I’ll divide the error in half to report \(1\sigma\) values.
 
-    ## 
-    ## Attaching package: 'mosaicCore'
+Also the error is asymmetric. WTF? Did they do some kind of resampling
+scheme to calculate the confidence intervals? Whatever, I’ll just cut
+each error in half to get \(1\sigma\).
 
-    ## The following objects are masked from 'package:dplyr':
-    ## 
-    ##     count, tally
+For \(A\): the low error is \(8.00 + (8.16-8.00)/2 = 8.08\). The high
+error is \(8.16 + (8.45 -8.16)/2 = 8.31\).
 
-    ## 
-    ## Attaching package: 'mosaicCalc'
+For \(B\): the low error is \((-1.01)+(-0.94+1.01)/2 = -0.975\). The
+high error is \(-0.94 + (-0.81 + 0.94)/2 =-0.875\).
 
-    ## The following object is masked from 'package:stats':
-    ## 
-    ##     D
+Let’s re-perform the calculation with each of the sets of numbers. For
+convenience we’ll wrap the calculation of the total number of cells in a
+function.
 
-    library(tidyverse)
+``` r
+calc_cells <- function(d_pred = d_pred, A.m, B = B, y.m = y.m) { # d_pred and y.m defined above
+  d_pred <- d_pred %>%
+  mutate(c.col = calc_c_col(z.iso = z.pred.122.smooth, A.m = A.m, B = B),
+         c.cross.section = c.col * y.m) 
+  n.cells <- sum(d_pred$c.cross.section[d_pred$x.m >= 80*1000], na.rm = TRUE)
+  n.cells
+}
+```
 
-    ## ── Attaching packages ────────────────────────────────────── tidyverse 1.3.0 ──
+So the low “\(1\sigma\) prediction interval” - remember, there are a
+bunch of caveats on this error as described above = would be given by
+`A.m = 14.08` and `B = -0.975` and the high error would be given by `A.m
+= 14.31` and `B = -0.875`.
 
-    ## ✓ tibble  3.0.3     ✓ purrr   0.3.4
-    ## ✓ tidyr   1.1.0     ✓ stringr 1.4.0
-    ## ✓ readr   1.3.1     ✓ forcats 0.5.0
+``` r
+lo.cells <- calc_cells(d_pred = d_pred, A.m = 14.08, B = -0.875, y.m = y.m)
+hi.cells <- calc_cells(d_pred = d_pred, A.m = 14.31, B = -0.975, y.m = y.m)
+```
 
-    ## ── Conflicts ───────────────────────────────────────── tidyverse_conflicts() ──
-    ## x mosaicCore::count()        masks mosaic::count(), dplyr::count()
-    ## x purrr::cross()             masks mosaic::cross()
-    ## x mosaic::do()               masks dplyr::do()
-    ## x tidyr::expand()            masks Matrix::expand()
-    ## x dplyr::filter()            masks stats::filter()
-    ## x ggstance::geom_errorbarh() masks ggplot2::geom_errorbarh()
-    ## x dplyr::lag()               masks stats::lag()
-    ## x tidyr::pack()              masks Matrix::pack()
-    ## x mosaic::stat()             masks ggplot2::stat()
-    ## x mosaicCore::tally()        masks mosaic::tally(), dplyr::tally()
-    ## x tidyr::unpack()            masks Matrix::unpack()
+# Final cell counts
 
-I’m imagining a volume of the Earth’s crust like this: [crust
-diagram](schema.jpg)
+**We calculate that the number of cells is 1.34e+26, with +/- 1 standard
+deviation estimates of 9.53e+25 to 3.32e+26 cells.**
 
-Note that x is positive to the right, y is positive into the page, and z
-is positive down.
+# Volume
 
-Magnabosco says that the number of cells per unit volume, as a function
-of depth, is given by
-*ρ* = 10<sup>*A*</sup>*z*<sup>*B*</sup>
-Where *ρ* is the cell concentration along a column and *A* and *B* are
-parameters determined empirically from a linear fit to log-transformed
-cell data.
+We also need to know the volume of rock that represents. This is easier:
+we can just multiply the width of the box (273.4 km, expressed in
+meters) by the max depth (meters again) and add each of these slices
+(since they are one meter wide) to get the total volume.
 
-We can find the total number of cells in a column by integrating from
-*z* = 0 to *z* = *z*<sub>*m**a**x*</sub>,
+\[
+V = y \times \Sigma_{x=0}^{x_{max}}z_{iso}
+\]
 
-*c*<sub>*c**o**l*</sub> = ∫<sub>0</sub><sup>*z*<sub>*m**a**x*</sub></sup>*d**z*
-where *c*<sub>*c**o**l*</sub> is the number of cells per unit area in a
-column. (Magnabosco et al used cells cm<sup> − 3</sup> so this would be
-the number of cells in a 1 cm<sup>2</sup> column of crust.)
+``` r
+vol <- y.m * sum(d_pred$z.pred.122.smooth[d_pred$x.m >= 80*1000], na.rm = TRUE)
+```
 
-We can integrate over *x* (left-to-right across the page) to get the
-number of cells in a unit of cross-sectional area of crust.
+The volume calculated is 2.78e+14 m<sup>3</sup>.
 
-*c*<sub>*a**r**e**a*</sub> = ∫<sub>0</sub><sup>*x*<sub>*m**a**x*</sub></sup>*c*<sub>*c**o**l*</sub>(*x*)*d**x* = ∫<sub>0</sub><sup>*x*<sub>*m**a**x*</sub></sup>∫<sub>0</sub><sup>*z*<sub>*m**a**x*</sub></sup>10<sup>*A*</sup>*z*<sup>*B*</sup>*d**z**d**x*
+# Sanity checks
 
-Donato says that *x*<sub>*m**a**x*</sub> is given by a logarithmic
-function, which I’ll express as
-*x*<sub>*m**a**x*</sub> = *θ*log (*x* + 1)
-*θ* is a scaling factor so that *x*<sub>*m**a**x*</sub> is the
-appropriate number at the deepest end of our volume of crust, and we
-have to do *l**o**g*(*x* + 1) because *l**o**g*(0) is undefined. So the
-cross-section of the volume looks like this:
+First off, the area of the box we’re talking about is
+\(272 \times 120 = 3.2\times 10^4\) km2. The land area of the planet is
+\(3.6\times 10^8\) km^2. So the area of Earth’s landmass is pretty close
+to \(10^4\) times bigger than the area of our box. Magnabosco et al
+estimate the total number of cells in Earth’s continental subsurface as
+\(2-6 \textrm{(call it 3)} \times 10^{29}\) cells, whereas we calculate
+that our box contains 1.34e+26. So the Magnabosco number exceeds our
+number by a factor of around \(2\times 10^3\). Our box has a somewhat
+disproportionately high number of cells by that measure. Given that
+\(B\) for arcs (8.16) is higher than B for continental shelf/slope,
+shield, and extended crust (7.46-7.86) and is similar to that of orogens
+(8.15), that seems reasonable.
 
-*Insert plot here*.
+The shallowest the isotherm gets is about 3000 m. Let’s see what the
+number would be if we only calculate cell abundance in a rectangular
+prism 3000 m deep, 273 km wide and 120 km long.
 
-Let’s let R do the symbolic integration for us:
+\[
+\begin{aligned}
+c_{vol} &= x \times y \times \frac{10^Az_{iso(x)}^{B+1}}{B+1} \\
+&= 27,300 \times 160,000 \times \frac{ 10^{14.16} \times100^{0.06}}{0.06} \\
+&= 2.73 \times 1.6 \times 10^{9} \times \frac{10^{15.22}}{0.06}
+\end{aligned}
+\]
 
-    #A <- -8; B <- -0.7 # These are not quite right
-    rho <- formula(10^(A) * z^(B) ~ z) 
-      
-    mosaicCalc::antiD(rho)
+``` r
+c.est <- 273000 * (max(d_pred$x.m, na.rm = TRUE) - 80000) * 10^14.16 * 100^0.06 / 0.06
+```
 
-    ## function (z, C = 0, A, B) 
-    ## 10^(A) * 1/((B) + 1) * z^((B) + 1) + C
+This estimates 1.04e+26 total cells, which is about 77.5% of the amount
+I calculated. Pretty good\!.
 
-    z_max <- formula(theta * log10(x+1) ~ x)
-    antiD(z_max)
+Just as one more check, here’s a plot of how the fraction of cells in a
+14-km column you get from integrating only to a certain depth limit:
 
-    ## function (x, theta, C = 0) 
-    ## {
-    ##     numerical_integration(.newf, .wrt, as.list(match.call())[-1], 
-    ##         formals(), from, ciName = intC, .tol)
-    ## }
-    ## <environment: 0x7ffc01c4fe40>
+``` r
+z <- 0:14000
+c.col <- calc_c_col(z, A.m = A.m, B = B)
+c.frac <- c.col / max(c.col, na.rm = TRUE)
+
+dfc <- data.frame(z = z, c.frac = c.frac)
+ggplot(dfc, aes(x = z, y = c.frac)) +
+  geom_line() +
+  scale_y_continuous(labels = scales::label_percent()) +
+  xlab("max depth of integration, m") + 
+  ylab("frac of cells measured")
+```
+
+![](cell_ct_files/figure-gfm/unnamed-chunk-8-1.png)<!-- -->
+
+At a depth of 3000 m, we should get 91% of the total cells. So the fact
+that this simple box model calculates 77.5% of the cells that the more
+spatially accurate model calculates is a good sign.
+
+## Using R’s integrate function
+
+After performing this analysis, I learned of the existence of R’s
+`integrate()` function. Pretty useful\! Let’s check to see that

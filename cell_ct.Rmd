@@ -1,6 +1,6 @@
 ---
 title: "Finding the number of cells in a volume of the crust"
-output: pdf_document
+output: github_document
 author: Drew
 date: "31 Aug 2020"
 ---
